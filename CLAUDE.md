@@ -73,8 +73,8 @@ There are **two parts**:
 | **Part 2 — `FINDINGS.md` write-up** | ✅ **DONE** | fully written (source-of-truth table, per-ticket root cause, multi-writer deep dive, fix direction, before/after) |
 | **Part 2 — demonstration migration** | ✅ **DONE** | `ASSIGNMENT/db/migrations/0001_fix_payment_source_of_truth.sql` — idempotent (verified by applying twice); **not** auto-loaded (subdir), apply manually (see Part 2 section). Scope: fixes the slice's triggers + adds ledger projection; app writers + prod RPCs would also need consolidation. **Hardened** backfill step 4d → reconciles `total_paid_cents` for *every* post (correlated subquery, clears stale hand-written values even with no ledger row). |
 | **Part 2 — independent verification + DB reset** | ✅ **DONE** | re-verified migration end-to-end on a clean DB (backfill + going-forward INSERT/RECALC/ledger triggers: new-post snapshots campaign not stale $5; ledger insert→`paid`, delete→`unpaid`); confirmed `FINDINGS.md` app-code citations (incl. verbatim `ledger.ts:5`); reset live `assignment` DB to **pristine** (reproduces tickets) and dropped throwaway verification DBs. |
-| **`SUMMARY.md`** | ⬜ **OPEN** | required at submission (see `README.md` §Submitting) |
-| **`pnpm logs:capture` + commit logs** | ⬜ **OPEN** | run once before submit; commit `.claude-logs/` |
+| **`SUMMARY.md`** | ✅ **DONE** | written (Part 1 incl. tsconfig, Part 2 method/cause/next-steps/verify); committed. |
+| **`pnpm logs:capture` + commit logs** | ✅ **DONE** | `.claude-logs/` captured (3 Claude sessions) and committed (`8f45aed`). Re-run before final submit to capture later sessions. |
 
 > **Update this board** when you pick up or finish a workstream so other agents
 > don't duplicate effort.
