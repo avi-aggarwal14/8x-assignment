@@ -68,8 +68,9 @@ There are **two parts**:
 | **Part 1 — test suite** | ✅ **GREEN** | `pnpm test` → 98/98 passing |
 | **Part 2 — reproduce tickets vs DB** | ✅ **DONE** | reproduced against live seed; queries + output quoted in `FINDINGS.md` |
 | **Part 2 — root-cause analysis** | ✅ **DONE** | all 3 tickets root-caused in `FINDINGS.md` (stale `managed_creators` copy: wrong base-pay value + legacy milestone JSON shape; 3 unreconciled stores) |
-| **Part 2 — `FINDINGS.md` write-up** | ✅ **DONE** | fully written (source-of-truth table, per-ticket root cause, fix direction, before/after) |
-| **Part 2 — demonstration migration** | ✅ **DONE** | `ASSIGNMENT/db/migrations/0001_fix_payment_source_of_truth.sql` — idempotent fix; **not** auto-loaded (subdir), apply manually (see Part 2 section) |
+| **Part 2 — app-code write-path audit** | ✅ **DONE** | traced every writer of `*_cents` columns; found the **deeper root cause** — 4+ writers (2 triggers, `update-base`, `reprice-posts`, prod `process_post_payment` RPC) each with a *different* base-pay formula. See `FINDINGS.md` §2 "many writers". |
+| **Part 2 — `FINDINGS.md` write-up** | ✅ **DONE** | fully written (source-of-truth table, per-ticket root cause, multi-writer deep dive, fix direction, before/after) |
+| **Part 2 — demonstration migration** | ✅ **DONE** | `ASSIGNMENT/db/migrations/0001_fix_payment_source_of_truth.sql` — idempotent (verified by applying twice); **not** auto-loaded (subdir), apply manually (see Part 2 section). Scope: fixes the slice's triggers + adds ledger projection; app writers + prod RPCs would also need consolidation. |
 | **`SUMMARY.md`** | ⬜ **OPEN** | required at submission (see `README.md` §Submitting) |
 | **`pnpm logs:capture` + commit logs** | ⬜ **OPEN** | run once before submit; commit `.claude-logs/` |
 
