@@ -26,6 +26,14 @@ verified before/after on the database.
 [`CLAUDE.md`](./CLAUDE.md)) — a full map of the codebase and an agent status
 board, kept in sync with every change.
 
+**Logging fix** ([`scripts/capture-logs.mjs`](./scripts/capture-logs.mjs)) — the
+session-capture script only read string-content user messages, but Claude Code
+now stores prompts as arrays of blocks, so ~96% of prompts were dropped and the
+transcripts came out near-empty ("Exchanges: 0"). Fixed it to parse array text
+blocks (skipping tool-results), strip injected/IDE/command noise, and keep every
+assistant turn — transcripts went from ~380 B to ~30 KB each. (The README calls
+out debugging this script for your setup as part of the task.)
+
 **What I did *not* do:** I did not change application/production code for Part 2
 (the README asks for understanding over a patch, and the trigger bodies are
 verbatim from prod). The migration fixes the slice's DB triggers and adds a

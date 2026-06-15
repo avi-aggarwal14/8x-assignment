@@ -132,17 +132,45 @@ function renderTranscript(title, sessionId, source, turns) {
 }
 
 // ---- Claude Code: ~/.claude/projects/*/*.jsonl ----
-function isUserPrompt(e) {
-  if (e?.type !== 'user' || e.isMeta || e.isSidechain) return false;
+
+// Strip auto-injected context that wraps real prompts (system reminders, IDE
+// context, slash-command wrappers) so a human prompt that arrives alongside
+// them still reads cleanly instead of being dropped wholesale.
+function stripInjectedBlocks(text) {
+  return text
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+    .replace(/<ide_[a-z_]+>[\s\S]*?<\/ide_[a-z_]+>/g, '')
+    .replace(/<(local-command|command)-[a-z-]+>[\s\S]*?<\/(local-command|command)-[a-z-]+>/g, '')
+    .replace(/<command-(name|message|args)>[\s\S]*?<\/command-(name|message|args)>/g, '')
+    .trim();
+}
+
+// Extract a real human prompt from a `user` event. Handles both string content
+// and the array-of-blocks shape that Claude Code now uses for most prompts.
+// Returns null for tool-result-only messages (those are tool output fed back to
+// the model, not something the human typed) and for purely-injected context.
+function userPromptText(e) {
+  if (e?.type !== 'user' || e.isMeta || e.isSidechain) return null;
   const c = e.message?.content;
-  if (typeof c !== 'string' || !c.trim()) return false;
-  if (isInjected(c)) return false;
-  return !/^(<command-name>|<local-command|Caveat:)/.test(c);
+  let text;
+  if (typeof c === 'string') {
+    text = c;
+  } else if (Array.isArray(c)) {
+    // text blocks only — skip tool_result / tool_use / image blocks.
+    text = c
+      .filter((b) => b && typeof b === 'object' && b.type === 'text')
+      .map((b) => b.text ?? '')
+      .join('\n');
+  } else {
+    return null;
+  }
+  if (!text || !text.trim()) return null;
+  const cleaned = stripInjectedBlocks(text);
+  return cleaned || null; // null ⇒ was purely injected/command context
 }
 
 function parseClaude(raw) {
   const turns = [];
-  let pendingAssistant = null;
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
     let e;
@@ -152,18 +180,16 @@ function parseClaude(raw) {
       continue;
     }
     const time = typeof e.timestamp === 'string' ? e.timestamp : '';
-    if (isUserPrompt(e)) {
-      if (pendingAssistant) {
-        turns.push(pendingAssistant);
-        pendingAssistant = null;
-      }
-      turns.push({ role: 'user', text: e.message.content.trim(), time });
+    const prompt = userPromptText(e);
+    if (prompt) {
+      turns.push({ role: 'user', text: prompt, time });
     } else if (e?.type === 'assistant' && !e.isSidechain) {
+      // Keep every assistant text turn (not just the last before a prompt) so
+      // the transcript shows the actual work, not a collapsed summary.
       const text = textFromContent(e.message?.content);
-      if (text) pendingAssistant = { role: 'assistant', text, time };
+      if (text) turns.push({ role: 'assistant', text, time });
     }
   }
-  if (pendingAssistant) turns.push(pendingAssistant);
   return turns;
 }
 
