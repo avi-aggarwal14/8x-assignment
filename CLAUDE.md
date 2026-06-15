@@ -154,6 +154,14 @@ Pointers (full detail in `ARCHITECTURE.md` §7–8 and §13):
     legacy `{views, bonus_cents}`); the trigger reads the new keys and gets NULL
     on legacy rows → **no bonus (TICKET-486)**.
   - The three surfaces above never reconcile → **three totals (TICKET-490)**.
+- **Deeper root cause (write side):** the snapshot is written by **4+ independent
+  code paths, each with its own base-pay formula** — `create_managed_creator_post()`
+  (uses `base_pay` as-is → $1), `reprice-posts` route (`base_pay / platform_count`
+  → $0.50), `update-base` route (admin types it), and the prod
+  `process_post_payment` RPC. None reads `brand_campaigns` ($10). The very
+  existence of the `update-base` / `reprice-posts` override endpoints is ops
+  papering over numbers the triggers got wrong. A complete fix routes **every**
+  writer through one canonical pay function. (Full detail: `FINDINGS.md` §2.)
 
 Deliverable: fill in [`FINDINGS.md`](./FINDINGS.md) — source of truth per value,
 root cause per ticket, fix direction (what becomes canonical, what stops being
