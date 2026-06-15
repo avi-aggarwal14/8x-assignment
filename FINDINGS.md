@@ -294,6 +294,29 @@ makes this a P0 financial-correctness bug rather than a cosmetic display glitch.
    rows so wallet = owed, then recompute `total_paid_cents`/`payment_status`
    from the ledger. Re-open Teo's status (paid $5 of $60 ≠ `paid`).
 
+**Open questions I'd resolve before shipping a production fix** (things the slice
+can't answer on its own — I'd confirm with whoever owns this data/code):
+
+- **Is `managed_creators.base_pay` ever a *legitimate* per-creator rate, or pure
+  drift?** That decides the migration: if real negotiated overrides exist, it
+  becomes an explicit `base_pay_override_cents` the campaign falls back to; if
+  it's only a stale mirror, it gets dropped. (Maria 100 / Teo 500 vs campaign
+  1000 looks like drift / a 10× units slip, but I wouldn't delete a money column
+  on a guess.)
+- **Can one `job` have more than one `brand_campaign`?** The fix joins
+  `brand_campaigns` via `job_id` and the seed is 1:1, but campaigns carry
+  `platforms`/`country` — if a job fans out to several, "which campaign's rate"
+  needs a real selection rule, not `LIMIT 1`.
+- **Do the out-of-slice writers get repointed too?** `process_post_payment`,
+  `record_earning_atomic`, and `get_grouped_post_payments` live in prod, not this
+  slice — the fix only holds if they route through the same canonical pay
+  function + ledger. I'd read those bodies before calling it done.
+- **CPM path parity.** These creators are flat-pay (`cpm_rate` NULL). I'd verify
+  the separate CPM submissions path (`cpm_submissions`, `jobs.cpm_base_pay` — yet
+  another unused copy) has the same source-of-truth discipline.
+- **Auto-credit policy.** Whether to back-pay each creator's shortfall (migration
+  step 4e, left commented) is a finance/legal call, not an engineering one.
+
 ---
 
 ## 4. Anything you actually changed
