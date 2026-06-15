@@ -284,16 +284,20 @@ SET calculated_pay_cents = CASE
 FROM posts p
 WHERE p.id = mcp.post_id;
 
--- 4d. Reconcile total_paid_cents + payment_status from the ledger.
+-- 4d. Reconcile total_paid_cents from the ledger for EVERY post.
+--     Correlated subquery (not an inner join) so posts with NO ledger rows
+--     reset to 0, clearing any stale hand-written value (e.g. the seed's raw
+--     `UPDATE ... SET total_paid_cents = 500`). "Paid" = sum of positive
+--     entries (gross). If clawbacks/refunds are modelled as negative rows and
+--     "paid" should be net, drop the `amount_cents > 0` filter here AND in
+--     sync_post_paid_from_ledger() so the two stay consistent.
 UPDATE managed_creator_posts mcp
-SET total_paid_cents = COALESCE(l.paid, 0)
-FROM (
-    SELECT managed_creator_post_id, SUM(amount_cents) AS paid
-    FROM creator_transactions
-    WHERE amount_cents > 0
-    GROUP BY managed_creator_post_id
-) l
-WHERE l.managed_creator_post_id = mcp.id;
+SET total_paid_cents = COALESCE((
+        SELECT SUM(ct.amount_cents)
+        FROM creator_transactions ct
+        WHERE ct.managed_creator_post_id = mcp.id
+          AND ct.amount_cents > 0
+    ), 0);
 
 UPDATE managed_creator_posts
 SET payment_status = CASE

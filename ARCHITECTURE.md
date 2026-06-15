@@ -71,7 +71,8 @@ Path alias: `@/*` → repo root (`tsconfig.json`).
 ├── ASSIGNMENT/            # Part 2: self-contained Postgres slice (the payments puzzle)
 │   ├── db/init.sql        #   tables + payment TRIGGERS/FUNCTIONS (verbatim from prod migrations)
 │   ├── db/seed.sql        #   seed rows that DRIVE the triggers (no payment columns written by hand)
-│   └── docker-compose.yml #   Postgres on localhost:5433, auto-loads init.sql + seed.sql
+│   ├── db/migrations/     #   0001_fix_payment_source_of_truth.sql — demonstration fix (NOT auto-loaded; apply manually). See §8.
+│   └── docker-compose.yml #   Postgres on localhost:5433, auto-loads init.sql + seed.sql (NOT db/migrations/)
 │
 ├── app/                   # Next.js App Router — pages + the entire API surface
 │   ├── [locale]/          #   locale-prefixed UI, split into (admin) and (dashboard) route groups
@@ -342,6 +343,39 @@ between what the brand configured and what the triggers read:
 > The `FINDINGS.md` deliverable asks you to name the real source of truth per
 > value, the root cause of each ticket, and the fix direction (what becomes
 > canonical, what stops being written, what one-time migration is needed).
+
+### Status: investigation complete + demonstration fix written ✅
+- **`FINDINGS.md` is fully written** — reproduced against the live seeded DB
+  (queries + actual output quoted), all three tickets root-caused, source-of-truth
+  table, fix direction, and a before/after table. Read it for the authoritative
+  analysis.
+- **`ASSIGNMENT/db/migrations/0001_fix_payment_source_of_truth.sql`** implements
+  the fix direction. It is **idempotent** and, critically, **not auto-loaded** —
+  it lives in a `db/migrations/` subdirectory, which the Postgres docker
+  entrypoint does *not* scan (only `/docker-entrypoint-initdb.d` top-level files
+  run, in name order; placing it there would make it run *before* `init.sql` and
+  fail). Apply manually:
+  ```bash
+  docker exec -i assignment_db psql -U postgres -d assignment \
+    < ASSIGNMENT/db/migrations/0001_fix_payment_source_of_truth.sql
+  ```
+  What it changes:
+  1. **Base pay + milestones sourced from `brand_campaigns`** (joined via
+     `managed_creators.job_id`), with `managed_creators` demoted to an explicit
+     fallback — directly addresses TICKET-481.
+  2. **Milestone JSON normalized** to canonical `{min_views, amount_cents}` via
+     `canonicalize_milestones()`, and read **key-tolerantly** (`qualifying_bonus_cents()`
+     accepts legacy `{views, bonus_cents}` too) — addresses TICKET-486.
+  3. **`total_paid_cents` / `payment_status` projected from `creator_transactions`**
+     via a new `AFTER INSERT/UPDATE/DELETE` trigger `trigger_sync_post_paid`
+     (`sync_post_paid_from_ledger()`) — the ledger becomes the paid-money truth,
+     addressing TICKET-490. `total_paid_cents` stops being a hand-written column.
+  4. **One-time backfill** re-derives base pay/milestones/owed for every existing
+     post and reconciles paid/status from the ledger. (Step 4e — auto-crediting
+     missing wallet earnings — is left commented; moving money is a business call.)
+  - Verified before/after on the live DB: Maria $1→$60 owed (bonus restored);
+    Teo flips `paid`→`partially_paid` ($5 of $60). Forward checks mutate the
+    throwaway container — `docker compose down -v && up -d` for a pristine seed.
 
 ---
 

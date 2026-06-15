@@ -54,15 +54,22 @@ There are **two parts**:
 
 ## Status board
 
+> **Last full codebase→docs reconciliation: 2026-06-15.** On request, an agent
+> sweeps the whole repo (recently-modified files outside `node_modules`) for
+> changes or artifacts left undocumented and folds them into this file /
+> `ARCHITECTURE.md`, so this board always reflects reality. If you make a change,
+> update the board yourself rather than waiting for a sweep.
+
 | Workstream | Status | Owner / notes |
 |---|---|---|
 | **Part 1 — bug #1 rate limiter** | ✅ **DONE** | `lib/modules/phone-verification/rate-limit.ts` |
 | **Part 1 — bug #2 lookup classifier** | ✅ **DONE** | `lib/admin/lookup/classify.ts` |
 | **Part 1 — bug #3 CPM earnings** | ✅ **DONE** | `lib/modules/cpm/utils.ts` |
 | **Part 1 — test suite** | ✅ **GREEN** | `pnpm test` → 98/98 passing |
-| **Part 2 — reproduce tickets vs DB** | ⬜ **OPEN** | needs `docker compose up -d`; queries are in `TICKETS.md` |
-| **Part 2 — root-cause analysis** | ⬜ **OPEN** | trace `ASSIGNMENT/db/init.sql` triggers + `seed.sql` |
-| **Part 2 — `FINDINGS.md` write-up** | ⬜ **OPEN** | the primary deliverable; currently a blank template |
+| **Part 2 — reproduce tickets vs DB** | ✅ **DONE** | reproduced against live seed; queries + output quoted in `FINDINGS.md` |
+| **Part 2 — root-cause analysis** | ✅ **DONE** | all 3 tickets root-caused in `FINDINGS.md` (stale `managed_creators` copy: wrong base-pay value + legacy milestone JSON shape; 3 unreconciled stores) |
+| **Part 2 — `FINDINGS.md` write-up** | ✅ **DONE** | fully written (source-of-truth table, per-ticket root cause, fix direction, before/after) |
+| **Part 2 — demonstration migration** | ✅ **DONE** | `ASSIGNMENT/db/migrations/0001_fix_payment_source_of_truth.sql` — idempotent fix; **not** auto-loaded (subdir), apply manually (see Part 2 section) |
 | **`SUMMARY.md`** | ⬜ **OPEN** | required at submission (see `README.md` §Submitting) |
 | **`pnpm logs:capture` + commit logs** | ⬜ **OPEN** | run once before submit; commit `.claude-logs/` |
 
@@ -97,7 +104,30 @@ Verify: `pnpm test` → **98/98 passing** (3 test files: `rate-limit.test.ts`,
 
 ---
 
-## Part 2 — what's open (the real task)
+## Part 2 — the investigation (analysis DONE; see `FINDINGS.md`)
+
+> **Status:** the investigation is complete and written up in
+> [`FINDINGS.md`](./FINDINGS.md), and a demonstration migration has been written
+> (`ASSIGNMENT/db/migrations/0001_fix_payment_source_of_truth.sql`). The summary
+> below remains as orientation; the authoritative write-up is `FINDINGS.md`.
+>
+> **What the migration does** (idempotent; apply manually — it is in a subdir so
+> the Postgres entrypoint does **not** auto-run it on a fresh boot):
+> 1. Sources `base_pay_cents` + `bonus_milestones` from `brand_campaigns` (joined
+>    via `managed_creators.job_id`), with `managed_creators` as explicit fallback.
+> 2. Normalizes milestone JSON to canonical `{min_views, amount_cents}` and reads
+>    it key-tolerantly (still accepts legacy `{views, bonus_cents}` in transition).
+> 3. Projects `total_paid_cents` / `payment_status` from `creator_transactions`
+>    via a new `trigger_sync_post_paid` (AFTER INSERT/UPDATE/DELETE).
+> 4. Backfills + recomputes every existing post.
+>
+> ```bash
+> docker exec -i assignment_db psql -U postgres -d assignment \
+>   < ASSIGNMENT/db/migrations/0001_fix_payment_source_of_truth.sql
+> ```
+> Verified before/after: Maria $1→$60 owed (bonus restored), Teo flips `paid`→
+> `partially_paid` ($5 of $60). The forward checks mutated the throwaway
+> container — `docker compose down -v && docker compose up -d` for a clean seed.
 
 The investigation. Don't start by editing code — start by **reproducing the
 tickets against the database**, then **trace each number to the trigger/column

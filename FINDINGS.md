@@ -156,6 +156,33 @@ re-runs this trigger — and it still produces $5 / $0 bonus, because it's readi
 the same stale snapshot. New view data can therefore never pull the numbers back
 toward what the brand configured.
 
+### The deeper root cause: many writers, contested `base_pay` semantics
+
+Tracing the app code (`grep` for the `*_cents` columns) shows the snapshot is
+written by **at least four independent code paths, each with its own formula** —
+which is the *write-side* of the same "nobody agrees" problem:
+
+| Writer | How it derives base pay | Result for Maria (`base_pay=100`) |
+|---|---|---|
+| `create_managed_creator_post()` trigger | `managed_creators.base_pay` as-is | **$1.00** |
+| `app/.../reprice-posts/route.ts` | `base_pay / platform_count` (`100/2`) | **$0.50** |
+| `app/.../update-base/route.ts` | whatever an admin types | arbitrary |
+| `brand_campaigns` (the real truth) | `base_pay_per_video_cents` | **$10.00** |
+
+So `managed_creators.base_pay` has **three contradictory interpretations** in
+live code (per-post cents / total-to-split-across-platforms / ignored), none of
+which equals the campaign's $10. Likewise none of the app writers fixes the
+bonus: `reprice-posts` copies `managed_creators.bonus_milestones` (still the
+legacy `{views, bonus_cents}` shape) and preserves the existing `bonus_cents`
+(0); `update-base` requires an admin to type the bonus by hand. The production
+payout path is yet another writer — the `process_post_payment` RPC (not in this
+slice) — which writes `total_paid_cents` directly rather than deriving it from
+the ledger. **The existence of `update-base` / `reprice-posts` is itself the
+tell: ops built manual-override endpoints to paper over numbers the triggers got
+wrong.** A complete fix must route *every* writer through one canonical pay
+function sourced from `brand_campaigns` + the ledger — not just fix the two
+triggers.
+
 ---
 
 ## 3. How you'd fix it
@@ -205,16 +232,53 @@ toward what the brand configured.
 
 ## 4. Anything you actually changed
 
-- **No production code changed.** This is an investigation; the deliverable is
-  the analysis above. (Per the README, Part 2 prioritizes correct understanding
-  over a patch, and the trigger bodies are "verbatim from prod migrations.")
-- I did **start and seed the local DB** (`ASSIGNMENT/docker compose up -d`) and
-  ran read-only diagnostic queries to verify every claim. No rows were mutated.
-- Suggested next change (not yet applied), smallest-first:
-  1. In both trigger functions, source `base_pay_cents` and `bonus_milestones`
-     from `brand_campaigns` (joined via `managed_creators.job_id`), falling back
-     to per-creator overrides only when explicitly set.
-  2. Normalize milestone JSON to `{min_views, amount_cents}` (migration + a
-     transitional key-tolerant read).
-  3. Make `total_paid_cents` / `payment_status` a projection of
-     `creator_transactions`, and backfill the missing ledger rows.
+- **No application/production code changed.** The investigation (above) is the
+  primary deliverable, per the README.
+- I **started and seeded the local DB** and ran read-only diagnostic queries to
+  verify every claim before changing anything.
+- As a concrete demonstration of the fix direction in §3, I wrote a migration:
+  **`ASSIGNMENT/db/migrations/0001_fix_payment_source_of_truth.sql`** (placed in
+  a subdirectory so the Postgres entrypoint does *not* auto-run it on a fresh
+  boot). It:
+  1. Sources `base_pay_cents` + `bonus_milestones` from `brand_campaigns`
+     (joined via `managed_creators.job_id`), with `managed_creators` as an
+     explicit fallback only.
+  2. Normalizes milestone JSON to canonical `{min_views, amount_cents}` and
+     reads it **key-tolerantly** (accepts the legacy shape during transition).
+  3. Projects `total_paid_cents` / `payment_status` from `creator_transactions`
+     via a new `AFTER INSERT/UPDATE/DELETE` trigger (`trigger_sync_post_paid`).
+  4. Backfills + recomputes every existing post.
+
+  Apply with:
+  ```bash
+  docker exec -i assignment_db psql -U postgres -d assignment \
+    < ASSIGNMENT/db/migrations/0001_fix_payment_source_of_truth.sql
+  ```
+
+- **Verified before/after on the live DB:**
+
+  | | base_pay_cents | bonus_cents | total_owed_cents | total_paid_cents | status |
+  |---|---|---|---|---|---|
+  | Maria (before) | 100 | 0 | 100 | 0 | unpaid |
+  | Maria (after)  | **1000** | **5000** | **6000** | 0 | unpaid |
+  | Teo (before)   | 500 | 0 | 500 | 500 | **paid** |
+  | Teo (after)    | **1000** | **5000** | **6000** | 500 | **partially_paid** |
+
+  Forward checks also pass: a new `post_engagement_metrics` row recomputes
+  `total_owed` to $60 via the corrected recalc trigger, and inserting a ledger
+  `earning` auto-updates `total_paid_cents` + `payment_status` (no hand-written
+  column). The `4e` step (auto-crediting missing wallet earnings) is left
+  **commented** — moving money is a business decision, not a mechanical fix.
+
+  > Note: these forward checks mutated the throwaway container (added one metric
+  > + one transaction for Maria). Re-run `docker compose down -v && docker
+  > compose up -d` from `ASSIGNMENT/` for a pristine seed. Verified
+  > **idempotent** (applying twice yields the same result).
+
+- **Scope / honesty caveat:** the migration fixes the two triggers in this slice
+  and adds the ledger projection, but it does **not** by itself fully fix
+  production. The app-level writers (`update-base`, `reprice-posts`) and the
+  out-of-slice RPCs (`process_post_payment`, `record_earning_atomic`,
+  `get_grouped_post_payments`) still write/derive these numbers with their own
+  formulas (see §2 "many writers"). A real fix consolidates all of them onto one
+  canonical pay function sourced from `brand_campaigns` + the ledger.
