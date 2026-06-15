@@ -77,6 +77,23 @@ There are **two parts**:
 > **Update this board** when you pick up or finish a workstream so other agents
 > don't duplicate effort.
 
+### Oversight log — independent verification (2026-06-15)
+Another agent's Part 2 work was re-checked against ground truth, not taken on trust:
+- **Migration correctness:** applied `0001_fix_payment_source_of_truth.sql` to the
+  live DB — produced exactly the claimed after-state (Maria `1000/5000/6000/0/unpaid`,
+  Teo `1000/5000/6000/500/partially_paid`); applied **twice** → byte-identical, so
+  **idempotency holds**. DB then reset (`docker compose down -v && up -d`) to the
+  pristine buggy seed so the tickets still reproduce.
+- **`FINDINGS.md` §2 "many writers" claims:** verified against the actual app code —
+  `reprice-posts` really computes `round(base_pay / platform_count)` = `100/2` =
+  **$0.50** ([route.ts:33-35](app/api/admin/managed-creators/[id]/reprice-posts/route.ts#L33));
+  `update-base` writes an admin-typed value
+  ([route.ts:104-105](app/api/admin/creator-post-payments/update-base/route.ts#L104));
+  `process_post_payment` / `record_earning_atomic` / `get_grouped_post_payments`
+  exist as out-of-slice RPCs (`types/supabase.ts`, `pay/route.ts`, `ledger.ts`).
+  All checked claims are **accurate**.
+- **Part 1 fixes** remain verified (98/98 tests, typecheck + lint clean).
+
 ---
 
 ## Part 1 — what was done (DONE ✅)

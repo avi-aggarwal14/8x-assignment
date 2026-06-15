@@ -340,6 +340,27 @@ between what the brand configured and what the triggers read:
    the brand report reads `brand_campaigns` config — **three different totals
    (TICKET-490).**
 
+### The deeper root cause: many writers, contested `base_pay` (write side)
+
+Auditing the app code (`grep` for the `*_cents` columns) shows the snapshot is
+written by **≥4 independent code paths, each with its own base-pay formula** —
+the write-side of the same "nobody agrees" problem:
+
+| Writer | Base-pay formula | Maria (`base_pay=100`) |
+|---|---|---|
+| `create_managed_creator_post()` trigger | `managed_creators.base_pay` as-is | $1.00 |
+| `app/api/admin/managed-creators/[id]/reprice-posts/route.ts` | `base_pay / platform_count` (`100/2`) | $0.50 |
+| `app/api/admin/creator-post-payments/update-base/route.ts` | whatever an admin types | arbitrary |
+| `brand_campaigns` (the real truth) | `base_pay_per_video_cents` | $10.00 |
+
+So `managed_creators.base_pay` has **three contradictory interpretations** in
+live code, none equal to the campaign's $10. The production payout path is yet
+another writer — the `process_post_payment` RPC (not in this slice) — which
+writes `total_paid_cents` directly instead of deriving it from the ledger. The
+**existence of the `update-base` / `reprice-posts` override endpoints is itself
+the tell**: ops built manual fixups for numbers the triggers got wrong. A
+complete fix routes *every* writer through one canonical pay function.
+
 > The `FINDINGS.md` deliverable asks you to name the real source of truth per
 > value, the root cause of each ticket, and the fix direction (what becomes
 > canonical, what stops being written, what one-time migration is needed).
@@ -490,6 +511,12 @@ pnpm logs:capture    # export Claude/Codex session transcripts (grading)
   bonus_cents}`) coexist in JSONB and silently read as NULL across the boundary.
 - **`base_pay` is cents-in-a-NUMERIC**, easy to confuse with dollars; the `$1`
   bug is exactly this confusion.
+- **Many writers, one column.** `managed_creator_posts.*_cents` is written by
+  ≥4 paths with *different* formulas (create trigger, recalc trigger,
+  `update-base` route, `reprice-posts` route, prod `process_post_payment` RPC).
+  Editing one without the others just adds a fifth disagreeing number. The
+  `update-base` / `reprice-posts` endpoints exist because ops needed to override
+  trigger output by hand — a symptom, not a feature.
 - **Service-role client bypasses RLS.** Any `createServiceRoleClient()` query
   without a manual user filter is a potential data leak — the mobile handlers
   and admin routes live on this knife-edge.
