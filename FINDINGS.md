@@ -130,14 +130,37 @@ Three surfaces each read a **different store**, and nothing reconciles them:
  Teo R.       |       700000 |        500 |        500 | paid         |           500 |           6000
 ```
 
-- **(1) Admin payouts panel** (`app/api/admin/creator-post-payments/route.ts`)
-  reads the **frozen snapshot** `managed_creator_posts.total_owed_cents` →
-  Maria $1, Teo $5. Wrong base + missing bonus baked in.
-- **(2) Creator wallet** (`lib/services/wallet.ts` → `lib/modules/creator/ledger.ts`)
-  reads the **`creator_transactions` ledger** → Maria **$0** (no ledger rows at
-  all), Teo **$5** (one manually inserted `earning` of 500).
-- **(3) Brand spend report** reads the **`brand_campaigns` config** → each
-  creator should be $10 base + $50 bonus = **$60 (6000¢)**.
+Confirmed in the app code (exact lines, so this is checkable, not asserted):
+
+- **(1) Admin payouts panel** → the **frozen snapshot** `managed_creator_posts`.
+  `app/api/admin/creator-post-payments/route.ts` reads it two ways: grouped mode
+  calls the `get_grouped_post_payments` RPC over that table
+  ([route.ts:166](app/api/admin/creator-post-payments/route.ts#L166), mapped to
+  `total_owed_cents`/`total_paid_cents` at
+  [route.ts:193-198](app/api/admin/creator-post-payments/route.ts#L193-L198)),
+  and flat mode selects the snapshot columns directly from
+  `managed_creator_posts` ([route.ts:271](app/api/admin/creator-post-payments/route.ts#L271),
+  fields at [route.ts:216-256](app/api/admin/creator-post-payments/route.ts#L216-L256)).
+  → Maria $1, Teo $5 (wrong base + missing bonus baked in).
+- **(2) Creator wallet** → the **`creator_transactions` ledger**, never the
+  snapshot. `getWalletDashboard` derives its totals from
+  `getCreatorBalance(creator.id)` ([wallet.ts:264](lib/services/wallet.ts#L264),
+  surfaced as `total_earned_cents` at [wallet.ts:287](lib/services/wallet.ts#L287)),
+  which runs the `get_creator_balance` RPC
+  ([ledger.ts:54](lib/modules/creator/ledger.ts#L54)); the module is explicit that
+  *"All balances are derived from creator_transactions - no cached values"*
+  ([ledger.ts:5](lib/modules/creator/ledger.ts#L5)). → Maria **$0** (no ledger
+  rows), Teo **$5** (one manually inserted `earning` of 500).
+- **(3) Brand campaign view** → reads **both, inconsistently with itself**.
+  `app/api/admin/brand-campaigns/[campaignId]/detail/route.ts` surfaces the
+  *campaign config* rate `base_pay_per_video_cents` + `bonus_milestones`
+  ([detail/route.ts:115,120](app/api/admin/brand-campaigns/[campaignId]/detail/route.ts#L115))
+  — i.e. "$10/video + $50 bonus = **$60**" — but computes its spend **stats by
+  summing the snapshot** `total_owed_cents`/`total_paid_cents`
+  ([detail/route.ts:148-184](app/api/admin/brand-campaigns/[campaignId]/detail/route.ts#L148-L184)).
+  So the brand sees a configured $60 rate sitting next to snapshot-derived totals
+  of $1/$5 — the config value it set is shown but **never feeds any payable
+  number**.
 
 So for Maria the same post is simultaneously **$1 / $0 / $60**, and for Teo
 **$5 / $5 / $60**. **Root cause: three denormalized stores (frozen snapshot,
@@ -182,6 +205,49 @@ tell: ops built manual-override endpoints to paper over numbers the triggers got
 wrong.** A complete fix must route *every* writer through one canonical pay
 function sourced from `brand_campaigns` + the ledger — not just fix the two
 triggers.
+
+### Blast radius: a fleet-wide money bug, not two rows
+
+Nothing about this defect is specific to Maria and Teo — they just make it
+visible. **Every managed-creator post on the flat-pay path is exposed**, in three
+compounding ways:
+
+- **Underpayment (systemic).** Any post whose snapshot `base_pay_cents` came from
+  a drifted `managed_creators.base_pay` is underpaid, and the recalc trigger can
+  never heal it (it recomputes from the *frozen wrong value*). Both seeded
+  creators are underpaid 10–20× ($1/$5 vs the configured $10).
+- **Missing bonuses (systemic).** Any creator whose milestones are stored in the
+  legacy `{views, bonus_cents}` shape gets **$0 bonus at every view count** —
+  plausibly the entire pre-schema-change population, not a one-off.
+- **False `paid` status (most dangerous).** Because owed is computed too low,
+  `total_paid_cents >= total_owed_cents` flips a post to `paid` after a *partial*
+  payment (Teo: `paid` for $5 of $60). That hides the underpayment from ops **and**
+  suppresses further payout — so the error compounds and silently closes the
+  ticket. This is the difference between "a number is wrong" and "a creator is
+  underpaid and told they're settled."
+
+Quantify the exposure with one query before any backfill (this is what sizes the
+financial blast radius and drives the auto-credit decision in migration step 4e):
+
+```sql
+SELECT
+  count(*)                                                                  AS total_posts,
+  count(*) FILTER (WHERE mcp.base_pay_cents <> bc.base_pay_per_video_cents) AS wrong_base_pay,
+  count(*) FILTER (WHERE mcp.bonus_milestones::text LIKE '%bonus_cents%')   AS legacy_milestone_shape,
+  count(*) FILTER (WHERE mcp.payment_status = 'paid'
+                   AND mcp.total_owed_cents < bc.base_pay_per_video_cents)  AS falsely_marked_paid
+FROM managed_creator_posts mcp
+JOIN managed_creators mc ON mc.id = mcp.managed_creator_id
+JOIN brand_campaigns  bc ON bc.job_id = mc.job_id;
+--  total_posts | wrong_base_pay | legacy_milestone_shape | falsely_marked_paid
+--       2       |       2        |          2             |         1
+```
+
+On the seed that's **100% of posts underpaid, 100% missing bonus, and one already
+falsely `paid`**. In production the same query counts the real affected
+population — that number (creators owed back-pay, brand spend under-reported, and
+who's been wrongly told they're settled), **not** the two demo rows, is what
+makes this a P0 financial-correctness bug rather than a cosmetic display glitch.
 
 ---
 
