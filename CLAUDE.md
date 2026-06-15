@@ -66,11 +66,13 @@ There are **two parts**:
 | **Part 1 — bug #2 lookup classifier** | ✅ **DONE** | `lib/admin/lookup/classify.ts` |
 | **Part 1 — bug #3 CPM earnings** | ✅ **DONE** | `lib/modules/cpm/utils.ts` |
 | **Part 1 — test suite** | ✅ **GREEN** | `pnpm test` → 98/98 passing |
+| **Part 1 — tsconfig.json** | ✅ **DONE** | `"jsx": "react-jsx"` → `"preserve"` (Next.js requires it; the mistake was hidden from `tsc` by `noEmit` + React 19 auto-runtime types). `pnpm typecheck` clean. |
 | **Part 2 — reproduce tickets vs DB** | ✅ **DONE** | reproduced against live seed; queries + output quoted in `FINDINGS.md` |
 | **Part 2 — root-cause analysis** | ✅ **DONE** | all 3 tickets root-caused in `FINDINGS.md` (stale `managed_creators` copy: wrong base-pay value + legacy milestone JSON shape; 3 unreconciled stores) |
 | **Part 2 — app-code write-path audit** | ✅ **DONE** | traced every writer of `*_cents` columns; found the **deeper root cause** — 4+ writers (2 triggers, `update-base`, `reprice-posts`, prod `process_post_payment` RPC) each with a *different* base-pay formula. See `FINDINGS.md` §2 "many writers". |
 | **Part 2 — `FINDINGS.md` write-up** | ✅ **DONE** | fully written (source-of-truth table, per-ticket root cause, multi-writer deep dive, fix direction, before/after) |
-| **Part 2 — demonstration migration** | ✅ **DONE** | `ASSIGNMENT/db/migrations/0001_fix_payment_source_of_truth.sql` — idempotent (verified by applying twice); **not** auto-loaded (subdir), apply manually (see Part 2 section). Scope: fixes the slice's triggers + adds ledger projection; app writers + prod RPCs would also need consolidation. |
+| **Part 2 — demonstration migration** | ✅ **DONE** | `ASSIGNMENT/db/migrations/0001_fix_payment_source_of_truth.sql` — idempotent (verified by applying twice); **not** auto-loaded (subdir), apply manually (see Part 2 section). Scope: fixes the slice's triggers + adds ledger projection; app writers + prod RPCs would also need consolidation. **Hardened** backfill step 4d → reconciles `total_paid_cents` for *every* post (correlated subquery, clears stale hand-written values even with no ledger row). |
+| **Part 2 — independent verification + DB reset** | ✅ **DONE** | re-verified migration end-to-end on a clean DB (backfill + going-forward INSERT/RECALC/ledger triggers: new-post snapshots campaign not stale $5; ledger insert→`paid`, delete→`unpaid`); confirmed `FINDINGS.md` app-code citations (incl. verbatim `ledger.ts:5`); reset live `assignment` DB to **pristine** (reproduces tickets) and dropped throwaway verification DBs. |
 | **`SUMMARY.md`** | ⬜ **OPEN** | required at submission (see `README.md` §Submitting) |
 | **`pnpm logs:capture` + commit logs** | ⬜ **OPEN** | run once before submit; commit `.claude-logs/` |
 
@@ -82,8 +84,10 @@ Another agent's Part 2 work was re-checked against ground truth, not taken on tr
 - **Migration correctness:** applied `0001_fix_payment_source_of_truth.sql` to the
   live DB — produced exactly the claimed after-state (Maria `1000/5000/6000/0/unpaid`,
   Teo `1000/5000/6000/500/partially_paid`); applied **twice** → byte-identical, so
-  **idempotency holds**. DB then reset (`docker compose down -v && up -d`) to the
-  pristine buggy seed so the tickets still reproduce.
+  **idempotency holds**. Re-verified after the agent refined step 4d (ledger
+  reconciliation changed from an inner join to a correlated subquery so
+  ledger-less posts reset to 0 — an improvement; same after-state). DB then reset
+  (`docker compose down -v && up -d`) to the pristine buggy seed so tickets reproduce.
 - **`FINDINGS.md` §2 "many writers" claims:** verified against the actual app code —
   `reprice-posts` really computes `round(base_pay / platform_count)` = `100/2` =
   **$0.50** ([route.ts:33-35](app/api/admin/managed-creators/[id]/reprice-posts/route.ts#L33));
