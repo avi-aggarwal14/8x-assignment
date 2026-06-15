@@ -1,0 +1,40 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "statusMessage": "Loading repo operating rules (CLAUDE.md / ARCHITECTURE.md)...",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"MANDATORY (8x repo): Before starting ANY task, read CLAUDE.md and ARCHITECTURE.md in full and keep both in context for the whole task. After ANY meaningful contribution (bug fix, behavior/file change, Part 2 conclusion, finished workstream), update CLAUDE.md (the status board) and/or ARCHITECTURE.md in the SAME change set. Claim a status-board row before starting. See the Operating rules section at the top of CLAUDE.md.\"}}'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "echo '{\"systemMessage\":\"8x repo reminder: if you made a meaningful change this turn (bug fix, behavior/file change, Part 2 conclusion, finished workstream), make sure CLAUDE.md (status board) and/or ARCHITECTURE.md reflect it before finishing.\"}'"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/capture-logs.mjs >/dev/null 2>&1 || true"
+          }
+        ]
+      }
+    ]
+  }
+}
